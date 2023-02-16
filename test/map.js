@@ -16,7 +16,7 @@ test('map - iterate and wrap to start', (t) => {
 })
 
 
-test.solo('map - handle addition and deletion', (t) => {
+test('map - handle addition and deletion', (t) => {
   const map = new Map()
 
   map.set('foo0', 0)

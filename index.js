@@ -1,9 +1,13 @@
 import { cpus } from 'node:os'
 import { fork } from 'node:child_process'
 import debug from 'debug'
-import {EventEmitter} from 'events'
+import { EventEmitter } from 'events'
+import net from 'net'
+import DHT from '@hyperswarm/dht'
+import Hyperswarm from 'hyperswarm'
+import Stream from '@hyperswarm/dht-relay/tcp'
 
-import { encode, decode } from './lib/messages.js'
+import CustomMap from './lib/map.js'
 
 const CHILD_PATH = './lib/child.js'
 
@@ -11,119 +15,131 @@ const MAX_THREADS_COUNT = cpus().length
 
 const log = debug('hyperswarm-cluster-log')
 
-class Child {
-  /**
-   * @param {HyperswarmCluster} cluster
-   * @param {number} i
-   */
-  constructor (cluster, i) {
-    this._cluster = cluster
-
-    /** @type {import('child_process').ChildProcess} */
-    this._cp = fork(CHILD_PATH, ['foo bar']);
-
-    this._cp.once('error', () => {
-      log("Errored", i)
-    })
-
-    this._cp.once('close', (code, signal) => {
-      log("Closed hyperswarm-cluster child process:", i, "code:", code, "signal:", signal)
-    })
-
-    this._cp.on('message', (/** @type {string} */ message) => {
-      log("Message from child", message)
-      const call = decode(message)
-
-      if (!call) return
-
-      switch(call.method) {
-        case "JOIN_FLUSHED":
-          const [topicHex] = call.args
-          this._cluster.emit("flushed", i, topicHex)
-        default:
-          return
-      }
-    })
-  }
-
-  /**
-   * @param {string} topicHex
-   * @param {object} [opts]
-   */
-  join (topicHex, opts) {
-    const message = encode("join", [topicHex, opts ])
-    this._cp.send(message)
-  }
-
-  destroy () {
-    return this._cp.kill()
-  }
-}
-
 export default class HyperswarmCluster extends EventEmitter {
-  constructor (opts) {
+  /**
+   * @param {Options} [opts]
+   */
+  constructor (opts = {}) {
     super()
 
-    this._lastChildUsed = -1;
+    opts = {
+      bootstrap: opts.bootstrap
+    }
 
-    /** @type {Child[]} */
-    this._childs = []
+    this._lastChildUsed = -1
+    /** @type {Map<number, Child>} */
+    this._children = new CustomMap()
 
-    this.opened = this._open()
+    this.opened = this._open(opts)
+
+    // Cleanup child processes in the case of uncaughtException
+    process.on('uncaughtException', (err) => {
+      this._children.forEach(child => child.destroy())
+      throw err
+    });
   }
 
-  async ready (){
+  ready () {
     return this.opened
   }
 
-  _open () {
+  /** @param {Options} opts */
+  async _open (opts) {
+    /** @type {Map<number, Promise<any>>} */
+    const promises = new Map()
+
     for (let i = 0; i < MAX_THREADS_COUNT; i++) {
-      const child = new Child(this, i)
-      this._childs.push(child)
+      const child = new Child(this, i, opts)
+      const opened = child.ready().then(() => this._children.set(i, child))
+      promises.set(i, opened)
     }
+
+    return Promise.all([...promises.values()])
+      .then(() => true)
   }
 
   /**
    * @param {Buffer} topic
    * @param {object} [opts]
    */
-  join(topic, opts={}) {
-    const topicHex = topic.toString('hex')
-
-    this.ready().then(() => {
-      const child = this._nextChild()
-      child.join(topicHex, opts)
-    })
-
-    return {
-      flushed: () => new Promise(async (resolve) => {
-        this.on(
-          'flushed', 
-          /**
-           * @param {number} i
-           * @param {string} topic
-           */
-          (i, topic) => {
-            log('flushed man', i, topic)
-            if (topic === topicHex) {
-              resolve(true)
-            }
-          }
-        )
-      })
-    }
+  join (topic, opts = {}) {
+    /** @type {Child} */
+    // @ts-ignore
+    const child = this._children.next()
+    return child?.swarm?.join(topic, opts)
   }
 
-  _nextChild () {
-    this._lastChildUsed += 1
-    if (this._lastChildUsed >= this._childs.length) {
-      this._lastChildUsed = 0
-    }
-    return this._childs[this._lastChildUsed]
+  flush () {
+    return Promise.all([...this._children.values()].map(child => child.flush()))
   }
 
   async destroy () {
     await this.ready()
-    this._childs.forEach(child => child.destroy())
+    return Promise.all([...this._children.values()].map(child => child.destroy()))
   }
 }
+
+class Child {
+  /**
+   * @param {HyperswarmCluster} cluster
+   * @param {number} id
+   * @param {Options} opts
+   */
+  constructor (cluster, id, opts) {
+    this.swarm = null
+
+    /** @type {import('child_process').ChildProcess} */
+    this._cp = fork(CHILD_PATH, [JSON.stringify(opts)])
+
+    let openedDone = noop
+    this.opened = new Promise((resolve) => {
+      openedDone = resolve
+    })
+
+    this._cp.once('close', (code, signal) => {
+      log('Closed hyperswarm-cluster child process:', id, 'code:', code, 'signal:', signal)
+      this.opened = Promise.resolve(false)
+    })
+
+    this._cp.on('message', (/** @type {string} */ message) => {
+      if (typeof message !== 'number') return
+
+      this.socket = net.connect(message)
+      this.stream = new Stream(true, this.socket)
+      this.stream.on('error', noop)
+
+      this.dht = new DHT(this.stream)
+      this.swarm = new Hyperswarm(this.dht)
+
+      // @ts-ignore
+      this.swarm.on('connection', (conn, peerInfo) => {
+        console.log('CONNECTION', peerInfo)
+        cluster.emit('connection', conn, peerInfo)
+      })
+
+      openedDone()
+    })
+  }
+
+  ready () {
+    return this.opened
+  }
+
+  flush() {
+    return this.swarm?.flush()
+  }
+
+  async destroy () {
+    await this.swarm.destroy()
+    this._cp.kill()
+  }
+}
+
+/** @param {any[]} _ */
+function noop (..._) {}
+
+/**
+ * @typedef {{
+ *  bootstrap?: {host: string, port: number}[]
+ * }} Options
+ */
