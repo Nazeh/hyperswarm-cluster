@@ -4,13 +4,15 @@ import debug from 'debug'
 import { EventEmitter } from 'events'
 import net from 'net'
 import Hyperswarm from 'hyperswarm'
+import path from 'path'
+import { fileURLToPath } from 'url'
 
 import DHT from '@hyperswarm/dht-relay'
 import Stream from '@hyperswarm/dht-relay/tcp'
 
 import CustomMap from './lib/map.js'
 
-const CHILD_PATH = './lib/child.js'
+const CHILD_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), './lib/child.js')
 const MAX_THREADS_COUNT = cpus().length
 
 const log = debug('hyperswarm-cluster-primary')
