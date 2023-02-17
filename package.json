@@ -24,5 +24,10 @@
     "debug": "^4.3.4",
     "random-access-memory": "^6.1.0",
     "standard": "^17.0.0"
+  },
+  "standard": {
+    "ignore": [
+      "test/map.js"
+    ]
   }
 }

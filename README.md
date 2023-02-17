@@ -28,3 +28,9 @@ await cluster.flush()
 
 await cluster.destroy()
 ```
+
+## Benchmark
+
+```bash
+  npm run benchmark <optional number of topics - default to 3000>
+```

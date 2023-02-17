@@ -79,18 +79,18 @@ export default class HyperswarmCluster extends EventEmitter {
   join (topic, opts = {}) {
     /** @type {Node} */
     // @ts-ignore
-    const child = this.nodes.next()
-    return child?.join(topic, opts)
+    const node = this.nodes.next()
+    return node?.join(topic, opts)
   }
 
   flush () {
-    return Promise.all([...this.nodes.values()].map(child => child.flush()))
+    return Promise.all([...this.nodes.values()].map(node => node.flush()))
   }
 
   async destroy () {
     await this.ready()
     log('destroying cluster')
-    return Promise.all([...this.nodes.values()].map(child => child.destroy()))
+    return Promise.all([...this.nodes.values()].map(node => node.destroy()))
   }
 }
 
