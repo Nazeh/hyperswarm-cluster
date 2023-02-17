@@ -1,57 +1,85 @@
 import test from 'brittle'
 import Hyperswarm from 'hyperswarm'
+import Corestore from 'corestore'
+import RAM from 'random-access-memory'
 import createTestnet from '@hyperswarm/testnet'
 
 import HyperswarmCluster from '../index.js'
 
 test('open - destroy', async (t) => {
-  const cluster = new HyperswarmCluster()
+  const testnet = await createTestnet(3, t.teardown)
+  const cluster = new HyperswarmCluster(testnet)
+  await cluster.ready()
+
   await cluster.destroy()
 })
 
 test('announce topic', async (t) => {
   const testnet = await createTestnet(3, t.teardown)
 
+  const tc = t.test('connection')
+  tc.plan(2)
+
   const cluster = new HyperswarmCluster(testnet)
   await cluster.ready()
 
   const swarm = new Hyperswarm(testnet)
 
-  // t.plan(2)
+  cluster.on('connection', (conn) => {
+    conn.on('error', noop)
+    tc.alike(conn.remotePublicKey, swarm.keyPair.publicKey)
+  })
 
   const topic = random()
+  cluster.join(topic, { srever: true, client: false })
 
-  const discovery = cluster.join(topic, { server: true, client: false })
-  await discovery.flushed()
+  await cluster.flush()
 
-  cluster.on('data', (data) => {
-    console.log('HERE BE DATA', data)
-  })
-
-  cluster.on('connection', (conn) => {
-    console.log(cluster)
-    console.log('LOOK LOOK', conn.remotePublicKey)
-    t.alike(conn.remotePublicKey, swarm.keyPair.publicKey)
-    conn.write('foo')
-    conn.on('message', (message) => {
-      console.log('message in swarm', message)
-      t.is(message, 'foo')
-    })
-  })
-
-  await swarm.join(topic)
   swarm.on('connection', (conn) => {
-    conn.write('foo from swarm')
-    conn.on('message', (message) => {
-      console.log('message in swarm', message)
-      t.is(message, 'foo')
-    })
+    tc.alike(conn.remotePublicKey, cluster.nodes.values().next().value.keyPair.publicKey)
   })
 
-  await t
+  swarm.join(topic)
 
-  await cluster.destroy()
+  await tc
+
   await swarm.destroy()
+  await cluster.destroy()
+})
+
+test('corestore replication', async (t) => {
+  const testnet = await createTestnet(3, t.teardown)
+
+  const cluster = new HyperswarmCluster(testnet)
+  await cluster.ready()
+  const storeA = new Corestore(RAM)
+  cluster.on('connection', conn => storeA.replicate(conn))
+
+  const coreA = storeA.get({ name: 'foo' })
+  await coreA.ready()
+
+  await cluster.join(coreA.discoveryKey, { server: true, client: false }).flushed()
+
+  const swarm = new Hyperswarm(testnet)
+  const storeB = new Corestore(RAM)
+  swarm.on('connection', conn => storeB.replicate(conn))
+
+  const coreB = storeB.get({ key: coreA.key })
+  await coreB.ready()
+
+  swarm.join(coreB.discoveryKey)
+
+  await coreA.append(['foo', 'bar'])
+
+  coreB.findingPeers()
+  await coreB.update()
+  t.is(coreB.length, 2)
+
+  const block = await coreB.get(1)
+  t.is(block?.toString(), 'bar')
+
+  await swarm.destroy()
+  await cluster.destroy()
 })
 
 function random () {
@@ -61,3 +89,4 @@ function random () {
   }
   return Buffer.from(x.slice(0, 64), 'hex')
 }
+function noop () {}

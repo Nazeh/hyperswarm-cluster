@@ -2,21 +2,15 @@
 
 Scalable hyperswarm cluster to announce 1000s of topics as quickly as possible.
 
-## Features
-
-[x] - Multithreading
-[ ] - Horizontal scaling
-
-
 ## Usage 
 
 ```js
 import HyperswarmCluster = require('@synonymdev/hyperswarm-cluster')
 
-const swarm = new HyperswarmCluster()
-await swarm.ready() // await opening of all child processes
+const cluster = new HyperswarmCluster()
+await cluster.ready() // await opening of all relayed hyperswarm nodes
 
-swarm.on('connection', (conn) => {
+swarm.on('connection', (conn, peerInfo) => {
   // do something
 })
 
@@ -25,10 +19,12 @@ cnost topics = [
 ]
 
 for (let i=0; i < 3000; i++) {
-  swarm.join(topics[i], { server: true, client: false })
+  discovery = swarm.join(topics[i], { server: true, client: false })
+  discovery.flush() // you can await the announcement of each topic on its own.
 }
+
+await cluster.flush()
+// All topics announced
+
+await cluster.destroy()
 ```
-
-## API
-
-// TODO
